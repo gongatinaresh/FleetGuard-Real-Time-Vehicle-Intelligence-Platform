@@ -1,0 +1,48 @@
+﻿# Environment files and secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+ENV/
+
+# Python testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+
+# Node.js
+node_modules/
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+
+# Build and cache files
+.cache/
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE and editor
+.vscode/
+.idea/
+
+# Local test reports
+pytest_fail.txt
