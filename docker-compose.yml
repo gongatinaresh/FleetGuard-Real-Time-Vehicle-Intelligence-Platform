@@ -26,6 +26,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the project .env file}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      PORT: 8000
     depends_on:
       db:
         condition: service_healthy
@@ -47,6 +48,8 @@ services:
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
       VITE_WS_URL: ${VITE_WS_URL:-/ws}
+      BACKEND_URL: ${BACKEND_URL:-http://backend:8000}
+      PORT: 80
     ports:
       - "5173:80"
     healthcheck:

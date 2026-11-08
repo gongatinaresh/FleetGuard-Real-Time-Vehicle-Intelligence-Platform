@@ -26,8 +26,8 @@ docker compose ps
 The Compose services are:
 
 - `db`: PostgreSQL 16, internal port 5432, host port 5433, persistent `postgres_data` volume and `pg_isready` health check.
-- `backend`: FastAPI on port 8000; waits for healthy `db`, constructs a PostgreSQL URL using hostname `db`, and applies Alembic migrations before serving.
-- `frontend`: production-built React static files served by Nginx on port 5173; waits for a healthy backend, has an HTTP health check, proxies `/api/*` and `/ws` to FastAPI, and receives `VITE_API_BASE_URL` / `VITE_WS_URL` at container startup.
+- `backend`: FastAPI on port 8000; waits for healthy `db`, constructs a PostgreSQL URL using hostname `db`, and applies Alembic migrations before serving. Its `PORT` defaults to 8000.
+- `frontend`: production-built React static files served by Nginx on port 5173; waits for a healthy backend, has an HTTP health check, listens on container `PORT` (80 in Compose), proxies `/api/*` and `/ws` to FastAPI using `BACKEND_URL` (default `http://backend:8000`), and receives `VITE_API_BASE_URL` / `VITE_WS_URL` at container startup.
 
 Check `http://localhost:8000/health`, `http://localhost:5173/healthz`, and `http://localhost:5173`. The browser's default API and WebSocket URLs are same-origin `/api` and `/ws`, reverse-proxied by Nginx. These runtime variables can be changed in the project `.env` without rebuilding the frontend image. Follow startup output with `docker compose logs -f backend frontend`. Stop without removing stored data using `docker compose down`; avoid `docker compose down -v` unless database deletion is intended.
 
@@ -96,8 +96,22 @@ npm run build
 | `CORS_ORIGINS` | Backend | Comma-separated browser origins allowed by the API |
 | `VITE_API_BASE_URL` | Frontend | Browser-visible HTTP API base URL; runtime-injected by Compose Nginx |
 | `VITE_WS_URL` | Frontend | Browser-visible WebSocket URL; runtime-injected by Compose Nginx |
+| `BACKEND_URL` | Frontend Nginx | Backend origin used for `/api/` and `/ws` proxying; defaults to `http://backend:8000` in Compose |
+| `PORT` | Backend / frontend Nginx | Listening port; backend defaults to `8000`, frontend Nginx defaults to `80`, and each uses the platform's value when provided |
 
 Use the root `.env.example` for Compose and the backend/frontend examples for host-based development. These files contain placeholders, not actual credentials. Do not commit `.env` or `.env.local`.
+
+## Separate Render Docker services
+
+Create separate Render Docker web services using `backend/Dockerfile` and `frontend/Dockerfile` (with the corresponding directory as each service's build context), plus a Render PostgreSQL database. Configure:
+
+- **Backend service:** Render supplies `PORT`; do not override it. Set `DATABASE_URL` to the Render database's SQLAlchemy-compatible connection URL, and set `CORS_ORIGINS` to the exact public frontend origin, such as `https://your-dashboard.onrender.com`. Migrations run before Uvicorn starts. The image exposes port 8000 as its local default; the command binds to the provided `PORT`.
+- **Frontend service:** set `BACKEND_URL` to the backend's public origin, such as `https://your-api.onrender.com`, with no trailing slash. Keep `VITE_API_BASE_URL=/api` and `VITE_WS_URL=/ws`; Nginx proxies these same-origin browser requests and WebSocket upgrades to the backend. Nginx listens on the provided `PORT`, defaulting to 80.
+- Configure the Render web service to route to the frontend image's listening port. Ensure WebSocket connections are supported for live updates.
+- psycopg 3 is the installed PostgreSQL driver. The backend normalizes `postgres://`, `postgresql://`, and other PostgreSQL driver schemes to `postgresql+psycopg://` before connecting; credentials remain in the environment-provided URL and are not logged.
+- Store database URLs/passwords and other credentials only in Render's environment settings. Do not put secrets in source files or commit them.
+
+The local Compose defaults do not require `BACKEND_URL` or a platform `PORT`: Compose uses `http://backend:8000` and explicitly sets backend `PORT=8000` and frontend `PORT=80`. Keep the Compose PostgreSQL service and named volume for local use; Render should use its managed PostgreSQL service instead.
 
 ## Troubleshooting
 

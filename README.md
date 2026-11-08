@@ -34,7 +34,7 @@ Compose runs PostgreSQL, the backend with migrations, and the production-built R
 
 The backend waits for PostgreSQL's health check and runs `alembic upgrade head` before starting Uvicorn. PostgreSQL data is kept in the named `postgres_data` volume. To stop the containers without deleting data, run `docker compose down`. Do not use `docker compose down -v` unless you intend to delete the database volume.
 
-Compose reads its variables from the project-root `.env`. The backend connects to the database service at `db:5432`. By default, Nginx serves the frontend on port 5173 and reverse-proxies `/api/*` to the backend and `/ws` to its WebSocket endpoint. The browser uses same-origin `/api` and `/ws` URLs; override `VITE_API_BASE_URL` and `VITE_WS_URL` in the project `.env` only when needed. These are injected into `runtime-config.js` when the container starts, so they can be changed without rebuilding the image.
+Compose reads its variables from the project-root `.env`. The backend connects to the database service at `db:5432`. By default, Nginx serves the frontend on port 5173 and reverse-proxies `/api/*` and `/ws` to `http://backend:8000`. The browser uses same-origin `/api` and `/ws` URLs; override `VITE_API_BASE_URL` and `VITE_WS_URL` in the project `.env` only when needed. These are injected into `runtime-config.js` when the container starts, so they can be changed without rebuilding the image.
 
 ## Local development
 
@@ -100,8 +100,10 @@ python simulator\gps_simulator.py --demo --vehicle-id <ID> --geofence-id <ID>
 
 - `.env.example`, `backend/.env.example`, and `frontend/.env.example` contain examples only. Copy the relevant template and keep actual `.env` files out of version control.
 - Compose requires `POSTGRES_PASSWORD`; the example's placeholder must be replaced for local use.
-- Compose uses an Nginx-served production frontend build, but the overall configuration is still for local development/demo and is not a production deployment recipe.
-- `docker compose up` does not deploy the application.
+- Compose keeps PostgreSQL data in its named volume and uses the internal backend origin `http://backend:8000` by default.
+- For separate Render Docker web services, build the existing `backend` and `frontend` Dockerfiles as separate services and use a Render PostgreSQL database. Set backend `DATABASE_URL` to the database's SQLAlchemy-compatible connection URL, `CORS_ORIGINS` to the exact public frontend origin, and let Render supply `PORT`. Set frontend `BACKEND_URL` to the public backend origin (for example `https://your-api.onrender.com`, without a trailing slash). Leave frontend `VITE_API_BASE_URL=/api` and `VITE_WS_URL=/ws` so browser requests and WebSockets pass through Nginx. These values contain no secrets; database credentials must be stored as Render environment secrets.
+- The frontend Nginx service listens on `PORT` (defaults to 80; Compose sets it to 80). Render must allow WebSocket upgrades for live updates.
+- `docker compose up` runs the local stack; it does not deploy to Render.
 
 ## Boundary behavior
 
