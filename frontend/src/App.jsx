@@ -10,13 +10,45 @@ const WS_BASE = configuredWsUrl.startsWith('/')
   ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${configuredWsUrl}`
   : configuredWsUrl;
 
-const markerIcon = L.icon({
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
+const markerIcon = L.divIcon({
+  className: 'vehicle-marker-icon',
+  html: '<span class="vehicle-marker-dot"></span>',
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
 });
+const demoMarkerIcon = L.divIcon({
+  className: 'demo-vehicle-marker-icon',
+  html: '<span class="demo-vehicle-marker-dot">D</span>',
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+});
+
+const defaultMapCenter = [12.9716, 77.5946];
+const demoVehicles = [
+  { id: 'demo-whitefield', registration_number: 'DEMO-BLR-01', name: 'Whitefield delivery van', neighborhood: 'Whitefield', latitude: 12.9698, longitude: 77.7500 },
+  { id: 'demo-electronic-city', registration_number: 'DEMO-BLR-02', name: 'Electronic City service vehicle', neighborhood: 'Electronic City', latitude: 12.8452, longitude: 77.6602 },
+  { id: 'demo-marathahalli', registration_number: 'DEMO-BLR-03', name: 'Marathahalli cargo vehicle', neighborhood: 'Marathahalli', latitude: 12.9591, longitude: 77.6974 },
+  { id: 'demo-hebbal', registration_number: 'DEMO-BLR-04', name: 'Hebbal operations vehicle', neighborhood: 'Hebbal', latitude: 13.0358, longitude: 77.5970 },
+  { id: 'demo-koramangala', registration_number: 'DEMO-BLR-05', name: 'Koramangala fleet vehicle', neighborhood: 'Koramangala', latitude: 12.9352, longitude: 77.6245 },
+  { id: 'demo-yelahanka', registration_number: 'DEMO-BLR-06', name: 'Yelahanka dispatch vehicle', neighborhood: 'Yelahanka', latitude: 13.1007, longitude: 77.5963 },
+];
+const demoGeofences = [
+  {
+    id: 'demo-zone-whitefield',
+    name: 'Whitefield Operations Zone',
+    coordinates: [[12.9652, 77.7430], [12.9652, 77.7520], [12.9721, 77.7520], [12.9721, 77.7430], [12.9652, 77.7430]],
+  },
+  {
+    id: 'demo-zone-electronic-city',
+    name: 'Electronic City Hub',
+    coordinates: [[12.8410, 77.6550], [12.8410, 77.6650], [12.8490, 77.6650], [12.8490, 77.6550], [12.8410, 77.6550]],
+  },
+  {
+    id: 'demo-zone-koramangala',
+    name: 'Koramangala Service Area',
+    coordinates: [[12.9300, 77.6200], [12.9300, 77.6290], [12.9380, 77.6290], [12.9380, 77.6200], [12.9300, 77.6200]],
+  },
+];
 
 const defaultVehicle = { registration_number: '', name: '', status: 'active' };
 const defaultGeofence = { name: '', description: '', coordinates: '0,0;0,0.1;0.1,0.1;0.1,0;0,0' };
@@ -34,6 +66,11 @@ export default function App() {
   const [simulationCoordinates, setSimulationCoordinates] = useState({ latitude: '', longitude: '' });
   const [simulationResult, setSimulationResult] = useState(null);
   const [simulationPending, setSimulationPending] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
+  const [vehicleSearch, setVehicleSearch] = useState('');
+  const [deletingVehicleId, setDeletingVehicleId] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [formError, setFormError] = useState('');
 
   useEffect(() => {
     let socket;
@@ -46,6 +83,7 @@ export default function App() {
       socket = new WebSocket(WS_BASE);
       socket.onopen = () => {
         reconnectDelay = 1000;
+        setConnectionStatus('connected');
       };
       socket.onmessage = (event) => {
         const payload = JSON.parse(event.data);
@@ -67,8 +105,12 @@ export default function App() {
           }));
         }
       };
-      socket.onerror = () => console.warn('WebSocket connection failed');
+      socket.onerror = () => {
+        console.warn('WebSocket connection failed');
+        setConnectionStatus('reconnecting');
+      };
       socket.onclose = () => {
+        setConnectionStatus('reconnecting');
         if (disconnected) return;
         reconnectTimer = window.setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
@@ -89,8 +131,29 @@ export default function App() {
         id: geofence.id,
         latlngs: geofence.coordinates.map(([lat, lon]) => [lat, lon]),
         name: geofence.name,
+        isDemo: false,
       })),
     [geofences],
+  );
+  const allMapPoints = useMemo(
+    () => [
+      ...mapPoints,
+      ...demoGeofences.map((geofence) => ({
+        id: geofence.id,
+        latlngs: geofence.coordinates,
+        name: geofence.name,
+        isDemo: true,
+      })),
+    ],
+    [mapPoints],
+  );
+  const demoLocatedVehicles = useMemo(
+    () => demoVehicles.map((vehicle) => ({
+      ...vehicle,
+      isDemo: true,
+      location: { latitude: vehicle.latitude, longitude: vehicle.longitude },
+    })),
+    [],
   );
   const locatedVehicles = useMemo(
     () => vehicles
@@ -98,12 +161,20 @@ export default function App() {
       .filter((vehicle) => vehicle.location),
     [vehicles, vehicleLocations],
   );
+  const filteredVehicles = useMemo(() => {
+    const query = vehicleSearch.trim().toLowerCase();
+    if (!query) return vehicles;
+    return vehicles.filter((vehicle) =>
+      (vehicle.registration_number || '').toLowerCase().includes(query),
+    );
+  }, [vehicleSearch, vehicles]);
   const mapBoundsPoints = useMemo(
     () => [
       ...locatedVehicles.map(({ location }) => [location.latitude, location.longitude]),
-      ...mapPoints.flatMap(({ latlngs }) => latlngs),
+      ...demoLocatedVehicles.map(({ location }) => [location.latitude, location.longitude]),
+      ...allMapPoints.flatMap(({ latlngs }) => latlngs),
     ],
-    [locatedVehicles, mapPoints],
+    [locatedVehicles, demoLocatedVehicles, allMapPoints],
   );
 
   const loadData = async () => {
@@ -135,6 +206,8 @@ export default function App() {
       }));
     } catch (error) {
       console.error('Failed to load dashboard data', error);
+      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      setNotice({ type: 'error', message: `Dashboard data could not be refreshed: ${detail}` });
     }
   };
 
@@ -144,23 +217,66 @@ export default function App() {
 
   const handleVehicleSubmit = async (event) => {
     event.preventDefault();
-    await axios.post(`${API_BASE}/vehicles`, vehicleForm);
-    setVehicleForm(defaultVehicle);
-    loadData();
+    setFormError('');
+    try {
+      await axios.post(`${API_BASE}/vehicles`, vehicleForm);
+      setVehicleForm(defaultVehicle);
+      setNotice({ type: 'success', message: 'Vehicle added successfully.' });
+      await loadData();
+    } catch (error) {
+      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      setFormError(`Could not add vehicle: ${detail}`);
+    }
+  };
+
+  const handleVehicleDelete = async (vehicle) => {
+    const registration = vehicle.registration_number || vehicle.name || `Vehicle ${vehicle.id}`;
+    if (!window.confirm(`Delete ${registration}? This vehicle will be removed from the active fleet.`)) return;
+
+    setDeletingVehicleId(vehicle.id);
+    setNotice(null);
+    try {
+      await axios.delete(`${API_BASE}/vehicles/${vehicle.id}`);
+      setVehicles((current) => current.filter((item) => item.id !== vehicle.id));
+      setVehicleLocations((current) => {
+        const next = { ...current };
+        delete next[vehicle.id];
+        return next;
+      });
+      if (simulationVehicleId === vehicle.id) {
+        setSimulationVehicleId(null);
+        setSimulationCoordinates({ latitude: '', longitude: '' });
+        setSimulationResult(null);
+      }
+      setNotice({ type: 'success', message: `${registration} deleted successfully.` });
+      await loadData();
+    } catch (error) {
+      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      setNotice({ type: 'error', message: `Could not delete ${registration}: ${detail}` });
+    } finally {
+      setDeletingVehicleId(null);
+    }
   };
 
   const handleGeofenceSubmit = async (event) => {
     event.preventDefault();
-    const coordinates = geofenceForm.coordinates
-      .split(';')
-      .map((point) => PointStringToPair(point));
-    await axios.post(`${API_BASE}/geofences`, {
-      name: geofenceForm.name,
-      description: geofenceForm.description,
-      coordinates,
-    });
-    setGeofenceForm(defaultGeofence);
-    loadData();
+    setFormError('');
+    try {
+      const coordinates = geofenceForm.coordinates
+        .split(';')
+        .map((point) => PointStringToPair(point));
+      await axios.post(`${API_BASE}/geofences`, {
+        name: geofenceForm.name,
+        description: geofenceForm.description,
+        coordinates,
+      });
+      setGeofenceForm(defaultGeofence);
+      setNotice({ type: 'success', message: 'Geofence created successfully.' });
+      await loadData();
+    } catch (error) {
+      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      setFormError(`Could not create geofence: ${detail}`);
+    }
   };
 
   const simulateGpsUpdate = async (event) => {
@@ -206,168 +322,287 @@ export default function App() {
     }
   };
 
+  const activeVehicleCount = vehicles.filter((vehicle) => vehicle.status?.toLowerCase() === 'active').length;
+  const inactiveVehicleCount = vehicles.filter((vehicle) => vehicle.status?.toLowerCase() === 'inactive').length;
+
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Fleet safety</p>
-          <h1>Vehicle Geofencing Dashboard</h1>
+    <div className="app-shell" id="dashboard">
+      <aside className="sidebar">
+        <a className="brand" href="#dashboard" aria-label="FleetGuard dashboard">
+          <span className="brand-mark"><Icon name="shield" /></span>
+          <span><strong>FleetGuard</strong><small>FLEET INTELLIGENCE</small></span>
+        </a>
+        <div className="workspace-label">WORKSPACE</div>
+        <nav className="sidebar-nav" aria-label="Main navigation">
+          <a className="nav-link active" href="#dashboard"><Icon name="grid" />Dashboard</a>
+          <a className="nav-link" href="#live-tracking"><Icon name="map" />Live Tracking<span className="nav-live-dot" /></a>
+          <a className="nav-link" href="#vehicles"><Icon name="truck" />Vehicles</a>
+          <button className="nav-link unavailable" type="button" disabled title="Driver management is not available in this workspace"><Icon name="users" />Drivers</button>
+          <button className="nav-link unavailable" type="button" disabled title="Trip management is not available in this workspace"><Icon name="route" />Trips</button>
+          <a className="nav-link" href="#geofences"><Icon name="pin" />Geofences</a>
+          <a className="nav-link" href="#alerts"><Icon name="bell" />Alerts{alerts.length > 0 && <span className="nav-count">{alerts.length}</span>}</a>
+          <button className="nav-link unavailable" type="button" disabled title="Reports are not available in this workspace"><Icon name="chart" />Reports</button>
+        </nav>
+        <div className="sidebar-bottom">
+          <button className="nav-link unavailable" type="button" disabled title="Settings are not available in this workspace"><Icon name="settings" />Settings</button>
+          <div className="sidebar-footnote"><span className="connection-dot" />Fleet systems operational</div>
         </div>
-        <button className="secondary-button" onClick={loadData}>Refresh</button>
-      </header>
+      </aside>
 
-      <section className="stats-grid">
-        <div className="stat-card"><span>Total vehicles</span><strong>{summary.total_vehicles}</strong></div>
-        <div className="stat-card"><span>Active vehicles</span><strong>{summary.active_vehicles}</strong></div>
-        <div className="stat-card"><span>Total geofences</span><strong>{summary.total_geofences}</strong></div>
-        <div className="stat-card"><span>Total alerts</span><strong>{summary.total_alerts}</strong></div>
-      </section>
+      <main className="dashboard-main">
+        <header className="topbar">
+          <div className="page-heading">
+            <p className="eyebrow">FLEET OVERVIEW</p>
+            <h1>Vehicle Geofencing Dashboard</h1>
+          </div>
+          <div className="topbar-actions">
+            <label className="global-search">
+              <Icon name="search" />
+              <input
+                aria-label="Search vehicles by registration"
+                placeholder="Search registration..."
+                value={vehicleSearch}
+                onChange={(event) => setVehicleSearch(event.target.value)}
+              />
+              <kbd>/</kbd>
+            </label>
+            <span className={`connection-status ${connectionStatus}`}>
+              <span className="connection-dot" />
+              {connectionStatus === 'connected' ? 'Live' : connectionStatus === 'connecting' ? 'Connecting' : 'Reconnecting'}
+            </span>
+            <button className="icon-button refresh-button" type="button" onClick={loadData} aria-label="Refresh dashboard" title="Refresh dashboard">
+              <Icon name="refresh" />
+            </button>
+            <a className="icon-button notification-button" href="#alerts" aria-label="View alerts" title="View alerts">
+              <Icon name="bell" />
+              {alerts.length > 0 && <span className="notification-dot" />}
+            </a>
+            <div className="profile-chip">
+              <span className="avatar">FG</span>
+              <span className="profile-copy"><strong>Fleet Admin</strong><small>Administrator</small></span>
+              <Icon name="chevron" />
+            </div>
+          </div>
+        </header>
 
-      <div className="content-grid">
-        <div className="panel map-panel">
-          <h2>Live vehicle map</h2>
-          <MapContainer center={[0.06, 0.06]} zoom={13} scrollWheelZoom={true} className="map-container">
-            <MapViewport points={mapBoundsPoints} />
-            <TileLayer
-              attribution='&copy; OpenStreetMap contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            {mapPoints.map((geofence) => (
-              <Polygon key={geofence.id} positions={geofence.latlngs} pathOptions={{ color: 'green', fillOpacity: 0.2 }}>
-                <Popup>{geofence.name}</Popup>
-              </Polygon>
-            ))}
-            {locatedVehicles.map((vehicle) => (
-              <Marker
-                key={vehicle.id}
-                position={[vehicle.location.latitude, vehicle.location.longitude]}
-                icon={markerIcon}
-                title={vehicle.registration_number}
-              >
-                <Popup>
-                  <strong>{vehicle.registration_number}</strong>
-                  <br />
-                  {vehicle.name}
-                  <br />
-                  Latest location: {vehicle.location.latitude.toFixed(6)}, {vehicle.location.longitude.toFixed(6)}
-                </Popup>
-              </Marker>
-            ))}
-          </MapContainer>
-        </div>
+        <div className="dashboard-content">
+          {notice && <p className={`notice ${notice.type}`} role="status">{notice.message}</p>}
+          {formError && <p className="notice error" role="alert">{formError}</p>}
 
-        <aside className="panel">
-          <h2>Vehicle management</h2>
-          <form onSubmit={handleVehicleSubmit} className="stack-form">
-            <input value={vehicleForm.registration_number} onChange={(event) => setVehicleForm({ ...vehicleForm, registration_number: event.target.value })} placeholder="Registration number" />
-            <input value={vehicleForm.name} onChange={(event) => setVehicleForm({ ...vehicleForm, name: event.target.value })} placeholder="Vehicle name" />
-            <select value={vehicleForm.status} onChange={(event) => setVehicleForm({ ...vehicleForm, status: event.target.value })}>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-            <button type="submit">Add vehicle</button>
-          </form>
+          <section className="stats-grid" aria-label="Fleet statistics">
+            <StatCard icon="truck" label="Total vehicles" value={summary.total_vehicles} detail="Registered in fleet" tone="orange" />
+            <StatCard icon="activity" label="Active vehicles" value={summary.active_vehicles} detail="Currently active" tone="green" />
+            <StatCard icon="pause" label="Inactive vehicles" value={inactiveVehicleCount} detail="Marked inactive" tone="blue" />
+            <StatCard icon="pin" label="Total geofences" value={summary.total_geofences ?? geofences.length} detail="Configured zones" tone="purple" />
+            <StatCard icon="bell" label="Total alerts" value={summary.total_alerts} detail="Recorded events" tone="red" />
+          </section>
 
-          <div className="vehicle-list">
-            {vehicles.map((vehicle) => (
-              <div key={vehicle.id} className="list-row">
+          <div className="overview-grid">
+            <section className="panel map-panel" id="live-tracking">
+              <div className="panel-heading map-heading">
                 <div>
-                  <strong>{vehicle.name}</strong>
-                  <small>{vehicle.registration_number}</small>
+                  <p className="eyebrow">REAL-TIME OPERATIONS</p>
+                  <h2>Live vehicle map</h2>
                 </div>
-                <button
-                  type="button"
-                  className="small-button"
-                  aria-label={`Configure GPS simulation for ${vehicle.registration_number}`}
-                  onClick={() => {
-                    setSimulationVehicleId(vehicle.id);
-                    setSimulationCoordinates({ latitude: '', longitude: '' });
-                    setSimulationResult(null);
-                  }}
-                >
-                  Configure GPS simulation
-                </button>
+                <div className="map-legend"><span className="legend-vehicle" />Vehicle <span className="legend-geofence" />Geofence <span className="legend-demo">D</span>Simulated demo</div>
               </div>
-            ))}
+              <MapContainer center={defaultMapCenter} zoom={12} scrollWheelZoom={true} className="map-container">
+                <MapViewport points={mapBoundsPoints} />
+                <TileLayer
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                {allMapPoints.map((geofence) => (
+                  <Polygon
+                    key={geofence.id}
+                    positions={geofence.latlngs}
+                    pathOptions={geofence.isDemo
+                      ? { color: '#2879b9', fillColor: '#438dc5', fillOpacity: 0.1, weight: 2, dashArray: '6 5' }
+                      : { color: '#f7933a', fillColor: '#f7933a', fillOpacity: 0.13, weight: 2 }}
+                  >
+                    <Popup>
+                      <strong>{geofence.name}</strong>
+                      {geofence.isDemo && <><br /><span>SIMULATED DEMO ZONE</span></>}
+                    </Popup>
+                  </Polygon>
+                ))}
+                {locatedVehicles.map((vehicle) => (
+                  <Marker
+                    key={vehicle.id}
+                    position={[vehicle.location.latitude, vehicle.location.longitude]}
+                    icon={markerIcon}
+                    title={vehicle.registration_number}
+                  >
+                    <Popup>
+                      <strong>{vehicle.registration_number}</strong>
+                      <br />
+                      {vehicle.name}
+                      <br />
+                      Latest GPS location: {vehicle.location.latitude.toFixed(6)}, {vehicle.location.longitude.toFixed(6)}
+                    </Popup>
+                  </Marker>
+                ))}
+                {demoLocatedVehicles.map((vehicle) => (
+                  <Marker
+                    key={vehicle.id}
+                    position={[vehicle.location.latitude, vehicle.location.longitude]}
+                    icon={demoMarkerIcon}
+                    title={`${vehicle.registration_number} — simulated demonstration GPS`}
+                  >
+                    <Popup>
+                      <strong>{vehicle.registration_number}</strong>
+                      <br />
+                      {vehicle.name} · {vehicle.neighborhood}
+                      <br />
+                      SIMULATED DEMO GPS (fixed coordinates)
+                      <br />
+                      {vehicle.location.latitude.toFixed(6)}, {vehicle.location.longitude.toFixed(6)}
+                    </Popup>
+                  </Marker>
+                ))}
+              </MapContainer>
+              <div className="map-footer">
+                <span><span className="connection-dot" />{locatedVehicles.length} {locatedVehicles.length === 1 ? 'vehicle' : 'vehicles'} with backend GPS locations</span>
+                <div className="coordinate-strip" aria-label="Latest GPS coordinates">
+                  {locatedVehicles.length === 0 ? <span>No GPS coordinates received yet</span> : locatedVehicles.slice(0, 3).map((vehicle) => (
+                    <span key={vehicle.id}><strong>{vehicle.registration_number}</strong> {vehicle.location.latitude.toFixed(4)}, {vehicle.location.longitude.toFixed(4)}</span>
+                  ))}
+                </div>
+                <span className="demo-map-note"><span className="demo-marker-key">D</span>{demoLocatedVehicles.length} fixed simulated demo vehicles · map only</span>
+              </div>
+            </section>
+
+            <section className="panel alerts-panel" id="alerts">
+              <div className="panel-heading">
+                <div><p className="eyebrow">ACTIVITY FEED</p><h2>Recent alerts</h2></div>
+                <span className="live-tag"><span className="connection-dot" />LIVE</span>
+              </div>
+              <div className="alert-list">
+                {alerts.length === 0 ? (
+                  <div className="empty-state"><span className="empty-icon"><Icon name="bell" /></span><strong>All quiet</strong><p>No geofence events to show.</p></div>
+                ) : alerts.slice(0, 10).map((alert) => {
+                  const vehicle = vehicles.find((item) => Number(item.id) === Number(alert.vehicle_id));
+                  const geofence = geofences.find((item) => Number(item.id) === Number(alert.geofence_id));
+                  const eventType = (alert.event_type || 'EVENT').toUpperCase();
+                  return (
+                    <article key={alert.id} className="alert-item">
+                      <span className={`alert-icon ${eventType.toLowerCase()}`}><Icon name={eventType === 'ENTER' ? 'enter' : 'exit'} /></span>
+                      <div className="alert-copy">
+                        <div className="alert-title"><strong>{vehicle?.registration_number || `Vehicle ${alert.vehicle_id}`}</strong><span className={`pill ${eventType.toLowerCase()}`}>{eventType}</span></div>
+                        <small>{geofence?.name || `Geofence ${alert.geofence_id}`}</small>
+                        <time dateTime={alert.event_time}>{formatTimestamp(alert.event_time)}</time>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              <a className="text-link" href="#alerts">Viewing latest events <Icon name="chevron" /></a>
+            </section>
           </div>
 
+          <section className="panel vehicle-management" id="vehicles">
+            <div className="panel-heading section-heading">
+              <div><p className="eyebrow">FLEET DIRECTORY</p><h2>Vehicle management</h2><p className="section-description">Manage registered vehicles and their GPS tracking.</p></div>
+              <span className="vehicle-total">{vehicles.length} {vehicles.length === 1 ? 'vehicle' : 'vehicles'}</span>
+            </div>
+            <div className="management-grid">
+              <div className="vehicle-list-column">
+                <div className="list-header"><span>VEHICLE</span><span>STATUS</span><span>GPS</span><span>ACTIONS</span></div>
+                <div className="vehicle-list">
+                  {filteredVehicles.length === 0 ? (
+                    <p className="vehicle-empty">{vehicles.length === 0 ? 'No vehicles registered yet.' : 'No vehicles match that registration.'}</p>
+                  ) : filteredVehicles.map((vehicle) => {
+                    const hasLocation = Boolean(vehicleLocations[vehicle.id]);
+                    return (
+                      <article key={vehicle.id} className="vehicle-row">
+                        <div className="vehicle-identity">
+                          <span className="vehicle-avatar"><Icon name="truck" /></span>
+                          <span><strong>{vehicle.name || 'Unnamed vehicle'}</strong><small>{vehicle.registration_number}</small></span>
+                        </div>
+                        <span className={`status-pill ${(vehicle.status || 'unknown').toLowerCase()}`}><span />{vehicle.status || 'Unknown'}</span>
+                        <span className={`gps-state ${hasLocation ? 'available' : ''}`}><span />{hasLocation ? 'Tracking' : 'No signal'}</span>
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            className="small-button simulate-button"
+                            aria-label={`Configure GPS simulation for ${vehicle.registration_number}`}
+                            onClick={() => {
+                              setSimulationVehicleId(vehicle.id);
+                              setSimulationCoordinates({ latitude: '', longitude: '' });
+                              setSimulationResult(null);
+                            }}
+                          >
+                            <Icon name="activity" /><span>Simulate GPS</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-button delete-button"
+                            aria-label={`Delete ${vehicle.registration_number}`}
+                            title={`Delete ${vehicle.registration_number}`}
+                            disabled={deletingVehicleId === vehicle.id}
+                            onClick={() => handleVehicleDelete(vehicle)}
+                          >
+                            <Icon name="trash" />
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <section className="create-vehicle-card">
+                <div className="form-card-heading"><span className="form-icon"><Icon name="plus" /></span><div><h3>Add vehicle</h3><p>Register a vehicle to your fleet.</p></div></div>
+                <form onSubmit={handleVehicleSubmit} className="stack-form">
+                  <label>Registration number<input required value={vehicleForm.registration_number} onChange={(event) => setVehicleForm({ ...vehicleForm, registration_number: event.target.value })} placeholder="e.g. FG-2048" /></label>
+                  <label>Vehicle name<input required value={vehicleForm.name} onChange={(event) => setVehicleForm({ ...vehicleForm, name: event.target.value })} placeholder="e.g. Delivery Van 04" /></label>
+                  <label>Vehicle status<select value={vehicleForm.status} onChange={(event) => setVehicleForm({ ...vehicleForm, status: event.target.value })}><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
+                  <button type="submit" className="primary-button"><Icon name="plus" />Add vehicle</button>
+                </form>
+              </section>
+            </div>
+          </section>
+
           {simulationVehicleId !== null && (
-            <section className="simulation-panel" aria-label="GPS simulation mode">
-              <h3>GPS simulation mode</h3>
-              <p>Vehicle ID: {simulationVehicleId} ({vehicles.find((vehicle) => vehicle.id === simulationVehicleId)?.registration_number})</p>
-              <form onSubmit={simulateGpsUpdate} className="stack-form">
-                <label>
-                  Latitude (-90 to 90)
-                  <input
-                    type="number"
-                    step="any"
-                    value={simulationCoordinates.latitude}
-                    onChange={(event) => {
-                      setSimulationCoordinates((current) => ({ ...current, latitude: event.target.value }));
-                      setSimulationResult(null);
-                    }}
-                  />
-                </label>
-                <label>
-                  Longitude (-180 to 180)
-                  <input
-                    type="number"
-                    step="any"
-                    value={simulationCoordinates.longitude}
-                    onChange={(event) => {
-                      setSimulationCoordinates((current) => ({ ...current, longitude: event.target.value }));
-                      setSimulationResult(null);
-                    }}
-                  />
-                </label>
-                <p>
-                  Sending vehicle ID {simulationVehicleId} at coordinates{' '}
-                  {simulationCoordinates.latitude || '—'}, {simulationCoordinates.longitude || '—'}
-                </p>
-                <button type="submit" disabled={simulationPending}>
-                  {simulationPending ? 'Sending GPS update…' : 'Send GPS update'}
-                </button>
-                <button type="button" className="secondary-button" onClick={() => setSimulationVehicleId(null)}>
-                  Close simulation
-                </button>
-                {simulationResult && (
-                  <p role="status" aria-live="polite" data-result={simulationResult.type}>
-                    {simulationResult.message}
-                  </p>
-                )}
+            <section className="panel simulation-panel" aria-label="GPS simulation mode">
+              <div className="panel-heading section-heading">
+                <div><p className="eyebrow">LOCATION TESTING</p><h2>GPS simulation mode</h2><p className="section-description">Send a location update to the backend for geofence evaluation.</p></div>
+                <button type="button" className="secondary-button" onClick={() => setSimulationVehicleId(null)}>Close simulation</button>
+              </div>
+              <p className="selected-vehicle">Selected vehicle: <strong>{vehicles.find((vehicle) => vehicle.id === simulationVehicleId)?.registration_number || `Vehicle ${simulationVehicleId}`}</strong> <span>(ID {simulationVehicleId})</span></p>
+              <form onSubmit={simulateGpsUpdate} className="simulation-form">
+                <label>Latitude (-90 to 90)<input aria-label="Latitude (-90 to 90)" type="number" step="any" value={simulationCoordinates.latitude} onChange={(event) => { setSimulationCoordinates((current) => ({ ...current, latitude: event.target.value })); setSimulationResult(null); }} /></label>
+                <label>Longitude (-180 to 180)<input aria-label="Longitude (-180 to 180)" type="number" step="any" value={simulationCoordinates.longitude} onChange={(event) => { setSimulationCoordinates((current) => ({ ...current, longitude: event.target.value })); setSimulationResult(null); }} /></label>
+                <p className="coordinate-preview">Sending vehicle ID {simulationVehicleId} at coordinates {simulationCoordinates.latitude || '—'}, {simulationCoordinates.longitude || '—'}</p>
+                <button type="submit" className="primary-button" disabled={simulationPending}>{simulationPending ? 'Sending GPS update…' : 'Send GPS update'}</button>
+                {simulationResult && <p className={`simulation-result ${simulationResult.type}`} role="status" aria-live="polite" data-result={simulationResult.type}>{simulationResult.message}</p>}
               </form>
             </section>
           )}
-        </aside>
-      </div>
 
-      <div className="bottom-grid">
-        <section className="panel">
-          <h2>Geofence management</h2>
-          <form onSubmit={handleGeofenceSubmit} className="stack-form">
-            <input value={geofenceForm.name} onChange={(event) => setGeofenceForm({ ...geofenceForm, name: event.target.value })} placeholder="Geofence name" />
-            <input value={geofenceForm.description} onChange={(event) => setGeofenceForm({ ...geofenceForm, description: event.target.value })} placeholder="Description" />
-            <textarea value={geofenceForm.coordinates} onChange={(event) => setGeofenceForm({ ...geofenceForm, coordinates: event.target.value })} rows="4" placeholder="0,0;0,0.1;0.1,0.1;0.1,0;0,0" />
-            <button type="submit">Create geofence</button>
-          </form>
-        </section>
-
-        <section className="panel">
-          <h2>Recent alerts</h2>
-          <div className="alert-list">
-            {alerts.length === 0 ? <p>No alerts yet.</p> : alerts.slice(0, 8).map((alert) => (
-              <div key={alert.id} className="alert-item">
-                <span className={`pill ${alert.event_type.toLowerCase()}`}>{alert.event_type}</span>
-                <div>
-                  <strong>Vehicle {alert.vehicle_id}</strong>
-                  <small>Geofence {alert.geofence_id}</small>
-                </div>
-                <time>{new Date(alert.event_time).toLocaleString()}</time>
+          <section className="panel geofence-panel" id="geofences">
+            <div className="panel-heading section-heading">
+              <div><p className="eyebrow">LOCATION BOUNDARIES</p><h2>Geofence management</h2><p className="section-description">Create zones to monitor vehicle entry and exit events.</p></div>
+              <span className="vehicle-total">{geofences.length} configured</span>
+            </div>
+            <div className="geofence-content">
+              <div className="geofence-list">
+                {geofences.length === 0 ? <p className="vehicle-empty">No geofences configured yet.</p> : geofences.map((geofence) => (
+                  <div className="geofence-row" key={geofence.id}><span className="geofence-icon"><Icon name="pin" /></span><span><strong>{geofence.name}</strong><small>{geofence.description || `${geofence.coordinates?.length || 0} polygon points`}</small></span></div>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>
-      </div>
+              <form onSubmit={handleGeofenceSubmit} className="stack-form geofence-form">
+                <label>Geofence name<input required value={geofenceForm.name} onChange={(event) => setGeofenceForm({ ...geofenceForm, name: event.target.value })} placeholder="e.g. North distribution hub" /></label>
+                <label>Description<input value={geofenceForm.description} onChange={(event) => setGeofenceForm({ ...geofenceForm, description: event.target.value })} placeholder="Optional details" /></label>
+                <label>Polygon coordinates<textarea required value={geofenceForm.coordinates} onChange={(event) => setGeofenceForm({ ...geofenceForm, coordinates: event.target.value })} rows="3" placeholder="0,0;0,0.1;0.1,0.1;0.1,0;0,0" /></label>
+                <small className="form-hint">Enter latitude,longitude pairs separated by semicolons.</small>
+                <button type="submit" className="primary-button"><Icon name="plus" />Create geofence</button>
+              </form>
+            </div>
+          </section>
+          <footer className="dashboard-footer">FleetGuard <span>·</span> Real-time vehicle intelligence</footer>
+        </div>
+      </main>
     </div>
   );
 }
@@ -378,13 +613,55 @@ function MapViewport({ points }) {
   useEffect(() => {
     if (!points.length) return;
     if (points.length === 1) {
-      map.setView(points[0], Math.max(map.getZoom(), 13));
+      map.setView(points[0], 12);
       return;
     }
-    map.fitBounds(points, { padding: [30, 30], maxZoom: 13 });
+    map.fitBounds(points, { padding: [30, 30], maxZoom: 12 });
   }, [map, points]);
 
   return null;
+}
+
+function StatCard({ icon, label, value, detail, tone }) {
+  return (
+    <article className={`stat-card ${tone}`}>
+      <div className="stat-card-top">
+        <span className="stat-label">{label}<strong>{value ?? 0}</strong></span>
+        <span className="stat-icon"><Icon name={icon} /></span>
+      </div>
+      <small>{detail}</small>
+    </article>
+  );
+}
+
+function Icon({ name }) {
+  const paths = {
+    shield: 'M12 3 4.5 6v5.5c0 4.6 3.2 7.7 7.5 9.5 4.3-1.8 7.5-4.9 7.5-9.5V6L12 3Z M9 12l2 2 4-4',
+    grid: 'M4 4h6v6H4z M14 4h6v6h-6z M4 14h6v6H4z M14 14h6v6h-6z',
+    map: 'M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6Z M9 3v15 M15 6v15',
+    truck: 'M3 6h11v12H3z M14 10h4l3 3v5h-7z M7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z M18 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z',
+    users: 'M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M10 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M20 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75',
+    route: 'M6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z M18 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z M8 6h5a3 3 0 0 1 3 3v1a3 3 0 0 1-3 3h-2a3 3 0 0 0-3 3v1',
+    pin: 'M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z M12 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
+    bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',
+    chart: 'M4 19V5 M4 19h17 M8 15l4-5 4 3 5-7',
+    settings: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.7 2.94-.08-.02a1.7 1.7 0 0 0-1.75.62l-.05.07h-3.4l-.05-.07a1.7 1.7 0 0 0-1.75-.62l-.08.02-1.7-2.94.06-.06A1.7 1.7 0 0 0 9.6 15l-.08-.04v-3.4l.08-.04a1.7 1.7 0 0 0-.34-1.88l-.06-.06 1.7-2.94.08.02a1.7 1.7 0 0 0 1.75-.62l.05-.07h3.4l.05.07a1.7 1.7 0 0 0 1.75.62l.08-.02 1.7 2.94-.06.06a1.7 1.7 0 0 0-.34 1.88l.08.04v3.4l-.08.04Z',
+    search: 'm20 20-4.5-4.5 M18 10.5a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z',
+    refresh: 'M20 7v5h-5 M4 17v-5h5 M5.6 9a7 7 0 0 1 11.6-2L20 12 M4 12l2.8 5a7 7 0 0 0 11.6-2',
+    chevron: 'm9 18 6-6-6-6',
+    activity: 'M3 12h4l3-8 4 16 3-8h4',
+    pause: 'M8 5v14 M16 5v14',
+    enter: 'M4 12h12 M11 7l5 5-5 5 M20 5v14',
+    exit: 'M20 12H8 M13 7l-5 5 5 5 M4 5v14',
+    trash: 'M4 7h16 M10 11v6 M14 11v6 M5 7l1 14h12l1-14 M9 7V4h6v3',
+    plus: 'M12 5v14 M5 12h14',
+  };
+  return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name] || paths.grid} /></svg>;
+}
+
+function formatTimestamp(value) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : 'Time unavailable';
 }
 
 function normalizeLocation(location) {

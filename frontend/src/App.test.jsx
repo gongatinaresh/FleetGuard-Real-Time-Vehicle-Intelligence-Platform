@@ -11,15 +11,20 @@ vi.mock('axios', () => ({
   default: {
     get: vi.fn(),
     post: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
 vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }) => <div data-testid="map">{children}</div>,
+  MapContainer: ({ children, center, zoom }) => (
+    <div data-testid="map" data-center={center.join(',')} data-zoom={zoom}>{children}</div>
+  ),
   Marker: ({ children }) => <div>{children}</div>,
-  Polygon: () => null,
+  Polygon: ({ children }) => <div>{children}</div>,
   Popup: ({ children }) => <div>{children}</div>,
-  TileLayer: () => null,
+  TileLayer: ({ url, attribution }) => (
+    <div data-testid="map-tile-layer" data-url={url} data-attribution={attribution} />
+  ),
   useMap: () => ({ setView: vi.fn(), fitBounds: vi.fn(), getZoom: () => 13 }),
 }));
 
@@ -53,10 +58,10 @@ function summary(totalAlerts = 0) {
   };
 }
 
-function mockApi({ totalAlerts = 0, summaryRequest, vehicles = [] } = {}) {
+function mockApi({ totalAlerts = 0, summaryRequest, vehicles = [], locations = [] } = {}) {
   const responses = {
     '/api/vehicles': vehicles,
-    '/api/vehicles/locations/latest': [],
+    '/api/vehicles/locations/latest': locations,
     '/api/geofences': [],
     '/api/alerts': [],
   };
@@ -119,9 +124,42 @@ describe('dashboard', () => {
     expect(screen.getByRole('heading', { name: 'Vehicle Geofencing Dashboard' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Live vehicle map' })).toBeInTheDocument();
     expect(totalAlertCount()).toHaveTextContent('0');
+    expect(screen.getByTestId('map')).toHaveAttribute('data-center', '12.9716,77.5946');
+    expect(screen.getByTestId('map')).toHaveAttribute('data-zoom', '12');
+    expect(screen.getByTestId('map-tile-layer')).toHaveAttribute(
+      'data-url',
+      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    );
+    expect(screen.getByTestId('map-tile-layer').getAttribute('data-attribution')).toContain('OpenStreetMap');
     expect(sockets[0].url).toBe(
       `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`,
     );
+  });
+
+  it('identifies fixed Bengaluru demonstration locations separately from backend GPS', async () => {
+    mockApi({
+      vehicles: [{ id: 44, registration_number: 'FLEET-044', name: 'Actual van', status: 'active' }],
+      locations: [{
+        vehicle_id: 44,
+        latitude: 12.9,
+        longitude: 77.6,
+        timestamp: '2026-11-07T10:00:00Z',
+      }],
+    });
+    await renderDashboard();
+
+    expect(screen.getByText(/Latest GPS location: 12\.900000, 77\.600000/)).toBeInTheDocument();
+    expect(screen.getAllByText(/SIMULATED DEMO GPS/)).toHaveLength(6);
+    expect(screen.getAllByText('SIMULATED DEMO ZONE')).toHaveLength(3);
+    expect(screen.getByText(/Whitefield delivery van · Whitefield/)).toBeInTheDocument();
+    expect(screen.getByText(/Electronic City service vehicle · Electronic City/)).toBeInTheDocument();
+    expect(screen.getByText(/Marathahalli cargo vehicle · Marathahalli/)).toBeInTheDocument();
+    expect(screen.getByText(/Hebbal operations vehicle · Hebbal/)).toBeInTheDocument();
+    expect(screen.getByText(/Koramangala fleet vehicle · Koramangala/)).toBeInTheDocument();
+    expect(screen.getByText(/Yelahanka dispatch vehicle · Yelahanka/)).toBeInTheDocument();
+    expect(screen.getByText('1 vehicle with backend GPS locations')).toBeInTheDocument();
+    expect(screen.getByText('6 fixed simulated demo vehicles · map only')).toBeInTheDocument();
+    expect(screen.getByText('1 vehicle')).toBeInTheDocument();
   });
 
   it('shows a WebSocket alert and increments the total immediately', async () => {
@@ -190,7 +228,7 @@ describe('dashboard', () => {
     await renderDashboard();
 
     fireEvent.click(screen.getByRole('button', { name: 'Configure GPS simulation for GPS-027' }));
-    expect(screen.getByRole('region', { name: 'GPS simulation mode' })).toHaveTextContent('Vehicle ID: 27 (GPS-027)');
+    expect(screen.getByRole('region', { name: 'GPS simulation mode' })).toHaveTextContent('Selected vehicle: GPS-027 (ID 27)');
     expect(screen.getByText(/coordinates —, —/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Latitude (-90 to 90)'), { target: { value: '12.345' } });
@@ -239,5 +277,37 @@ describe('dashboard', () => {
 
     expect(await screen.findByRole('status')).toHaveTextContent('Enter valid latitude (-90 to 90)');
     expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it('filters vehicles by registration and deletes a vehicle after confirmation', async () => {
+    const vehicles = [
+      { id: 31, registration_number: 'FLEET-031', name: 'North van', status: 'active' },
+      { id: 32, registration_number: 'FLEET-032', name: 'South van', status: 'inactive' },
+    ];
+    mockApi({ vehicles });
+    axios.delete.mockImplementation(async (url) => {
+      expect(url).toBe('/api/vehicles/31');
+      mockApi({ vehicles: [vehicles[1]] });
+      return { status: 204 };
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await renderDashboard();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search vehicles by registration' }), {
+      target: { value: '032' },
+    });
+    expect(screen.getByText('FLEET-032')).toBeInTheDocument();
+    expect(screen.queryByText('FLEET-031')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search vehicles by registration' }), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete FLEET-031' }));
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Delete FLEET-031? This vehicle will be removed from the active fleet.',
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent('FLEET-031 deleted successfully.');
+    await waitFor(() => expect(screen.queryByText('FLEET-031')).not.toBeInTheDocument());
+    expect(axios.delete).toHaveBeenCalledWith('/api/vehicles/31');
   });
 });
