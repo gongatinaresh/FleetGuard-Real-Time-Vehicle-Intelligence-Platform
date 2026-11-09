@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.alert import Alert
 from app.models.geofence import Geofence
 from app.schemas.geofence import GeofenceCreate, GeofenceRead, GeofenceUpdate
 
@@ -49,5 +50,23 @@ def delete_geofence(geofence_id: int, db: Session = Depends(get_db)):
     geofence = db.query(Geofence).filter_by(id=geofence_id).first()
     if not geofence:
         raise HTTPException(status_code=404, detail="Geofence not found")
+
+    # Alerts reference geofences with ON DELETE CASCADE. Block deletion when
+    # history exists so a management action cannot erase historical events.
+    has_alert_history = (
+        db.query(Alert.id)
+        .filter(Alert.geofence_id == geofence_id)
+        .first()
+        is not None
+    )
+    if has_alert_history:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This geofence has historical ENTER/EXIT alerts and cannot be "
+                "deleted. Deletion is blocked to preserve alert history."
+            ),
+        )
+
     db.delete(geofence)
     db.commit()

@@ -528,3 +528,12 @@ kbd { border-color: #d9e0e8; color: #738092; }
 }
 .demo-map-note { align-items: center; display: inline-flex; gap: 2px; }
 .demo-map-note .demo-marker-key { flex: 0 0 auto; height: 14px; margin: 0 4px 0 0; width: 14px; }
+
+.geofence-row-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.geofence-delete-button {
+  flex: 0 0 auto;
+}

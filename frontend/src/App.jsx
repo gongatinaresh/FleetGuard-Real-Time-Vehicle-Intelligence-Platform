@@ -70,6 +70,7 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [vehicleSearch, setVehicleSearch] = useState('');
   const [deletingVehicleId, setDeletingVehicleId] = useState(null);
+  const [deletingGeofenceId, setDeletingGeofenceId] = useState(null);
   const [notice, setNotice] = useState(null);
   const [formError, setFormError] = useState('');
 
@@ -277,6 +278,28 @@ export default function App() {
       setNotice({ type: 'error', message: `Could not delete ${registration}: ${detail}` });
     } finally {
       setDeletingVehicleId(null);
+    }
+  };
+
+  const handleGeofenceDelete = async (geofence) => {
+    const name = geofence.name || `Geofence ${geofence.id}`;
+    const confirmed = window.confirm(
+      `Delete "${name}"? This cannot be undone. If this geofence has recorded ENTER/EXIT alerts, the backend will block deletion to preserve that history.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingGeofenceId(geofence.id);
+    setNotice(null);
+    try {
+      await axios.delete(`${API_BASE}/geofences/${geofence.id}`);
+      setGeofences((current) => current.filter((item) => item.id !== geofence.id));
+      setNotice({ type: 'success', message: `${name} deleted successfully.` });
+      await loadData();
+    } catch (error) {
+      const detail = formatApiError(error);
+      setNotice({ type: 'error', message: `Could not delete ${name}: ${detail}` });
+    } finally {
+      setDeletingGeofenceId(null);
     }
   };
 
@@ -629,7 +652,23 @@ export default function App() {
             <div className="geofence-content">
               <div className="geofence-list">
                 {geofences.length === 0 ? <p className="vehicle-empty">No geofences configured yet.</p> : geofences.map((geofence) => (
-                  <div className="geofence-row" key={geofence.id}><span className="geofence-icon"><Icon name="pin" /></span><span><strong>{geofence.name}</strong><small>{geofence.description || `${geofence.coordinates?.length || 0} polygon points`}</small></span></div>
+                  <div className="geofence-row" key={geofence.id}>
+                    <span className="geofence-icon"><Icon name="pin" /></span>
+                    <span className="geofence-row-copy">
+                      <strong>{geofence.name}</strong>
+                      <small>{geofence.description || `${geofence.coordinates?.length || 0} polygon points`}</small>
+                    </span>
+                    <button
+                      type="button"
+                      className="icon-button delete-button geofence-delete-button"
+                      aria-label={`Delete geofence ${geofence.name}`}
+                      title={`Delete ${geofence.name}`}
+                      disabled={deletingGeofenceId === geofence.id}
+                      onClick={() => handleGeofenceDelete(geofence)}
+                    >
+                      <Icon name="trash" />
+                    </button>
+                  </div>
                 ))}
               </div>
               <form onSubmit={handleGeofenceSubmit} className="stack-form geofence-form">
