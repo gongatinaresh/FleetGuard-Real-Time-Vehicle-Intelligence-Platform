@@ -136,9 +136,10 @@ describe('dashboard', () => {
     );
   });
 
-  it('identifies fixed Bengaluru demonstration locations separately from backend GPS', async () => {
+  it('does not render hardcoded demo vehicles or demo geofences', async () => {
     mockApi({
       vehicles: [{ id: 44, registration_number: 'FLEET-044', name: 'Actual van', status: 'active' }],
+      geofences: [{ id: 4, name: 'Warehouse Zone', coordinates: [[12.95, 77.61], [12.96, 77.61], [12.96, 77.62], [12.95, 77.62], [12.95, 77.61]] }],
       locations: [{
         vehicle_id: 44,
         latitude: 12.9,
@@ -148,18 +149,85 @@ describe('dashboard', () => {
     });
     await renderDashboard();
 
-    expect(screen.getByText(/Latest GPS location: 12\.900000, 77\.600000/)).toBeInTheDocument();
-    expect(screen.getAllByText(/SIMULATED DEMO GPS/)).toHaveLength(6);
-    expect(screen.getAllByText('SIMULATED DEMO ZONE')).toHaveLength(3);
-    expect(screen.getByText(/Whitefield delivery van · Whitefield/)).toBeInTheDocument();
-    expect(screen.getByText(/Electronic City service vehicle · Electronic City/)).toBeInTheDocument();
-    expect(screen.getByText(/Marathahalli cargo vehicle · Marathahalli/)).toBeInTheDocument();
-    expect(screen.getByText(/Hebbal operations vehicle · Hebbal/)).toBeInTheDocument();
-    expect(screen.getByText(/Koramangala fleet vehicle · Koramangala/)).toBeInTheDocument();
-    expect(screen.getByText(/Yelahanka dispatch vehicle · Yelahanka/)).toBeInTheDocument();
+    expect(screen.queryByText(/DEMO-BLR/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SIMULATED DEMO/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Whitefield delivery van/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Electronic City Hub/)).not.toBeInTheDocument();
     expect(screen.getByText('1 vehicle with backend GPS locations')).toBeInTheDocument();
-    expect(screen.getByText('6 fixed simulated demo vehicles · map only')).toBeInTheDocument();
-    expect(screen.getByText('1 vehicle')).toBeInTheDocument();
+    expect(screen.getAllByText('Warehouse Zone').length).toBeGreaterThan(0);
+  });
+
+  it('classifies a recent GPS timestamp as LIVE and a missing GPS location as LOCATION PENDING', async () => {
+    const recent = new Date(Date.now() - 60 * 1000).toISOString();
+    mockApi({
+      vehicles: [
+        { id: 45, registration_number: 'FLEET-045', name: 'Recent van', status: 'active' },
+        { id: 46, registration_number: 'FLEET-046', name: 'Pending van', status: 'active' },
+      ],
+      locations: [{
+        vehicle_id: 45,
+        latitude: 12.9,
+        longitude: 77.6,
+        timestamp: recent,
+      }],
+    });
+    await renderDashboard();
+
+    expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('LOCATION PENDING').length).toBeGreaterThan(0);
+  });
+
+  it('marks stale GPS data as GPS STALE and keeps the last-known location visible', async () => {
+    const staleTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    mockApi({
+      vehicles: [{ id: 47, registration_number: 'FLEET-047', name: 'Stale van', status: 'active' }],
+      locations: [{
+        vehicle_id: 47,
+        latitude: 12.8,
+        longitude: 77.5,
+        timestamp: staleTimestamp,
+      }],
+    });
+    await renderDashboard();
+
+    expect(screen.getAllByText('GPS STALE').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Status: GPS STALE/)).toBeInTheDocument();
+    expect(screen.getByText(/Coordinates: 12\.800000, 77\.500000/)).toBeInTheDocument();
+    const staleStatus = screen.getByText('GPS STALE');
+    expect(staleStatus.closest('.gps-state')).toHaveClass('stale');
+  });
+
+  it('treats invalid or missing timestamps as stale and never upgrades them to LIVE', async () => {
+    mockApi({
+      vehicles: [{ id: 48, registration_number: 'FLEET-048', name: 'Invalid timestamp van', status: 'active' }],
+      locations: [{
+        vehicle_id: 48,
+        latitude: 12.8,
+        longitude: 77.5,
+        timestamp: 'not-a-date',
+      }],
+    });
+    await renderDashboard();
+
+    expect(screen.getAllByText('GPS STALE').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Status: LIVE/)).not.toBeInTheDocument();
+  });
+
+  it('marks a future GPS timestamp as GPS STALE', async () => {
+    const futureTimestamp = new Date(Date.now() + 60 * 1000).toISOString();
+    mockApi({
+      vehicles: [{ id: 51, registration_number: 'FLEET-051', name: 'Future timestamp van', status: 'active' }],
+      locations: [{
+        vehicle_id: 51,
+        latitude: 12.8,
+        longitude: 77.5,
+        timestamp: futureTimestamp,
+      }],
+    });
+    await renderDashboard();
+
+    expect(screen.getAllByText('GPS STALE').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Status: LIVE/)).not.toBeInTheDocument();
   });
 
 
@@ -256,7 +324,7 @@ describe('dashboard', () => {
     await renderDashboard();
 
     fireEvent.click(screen.getByRole('button', { name: 'Configure GPS simulation for GPS-027' }));
-    expect(screen.getByRole('region', { name: 'GPS simulation mode' })).toHaveTextContent('Selected vehicle: GPS-027 (ID 27)');
+    expect(screen.getByRole('region', { name: 'GPS Simulation (Testing)' })).toHaveTextContent('Selected vehicle: GPS-027 (ID 27)');
     expect(screen.getByText(/coordinates —, —/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Latitude (-90 to 90)'), { target: { value: '12.345' } });
@@ -273,6 +341,39 @@ describe('dashboard', () => {
         longitude: -45.678,
       }),
     );
+  });
+
+  it('updates stale status with WebSocket location events without duplicating markers', async () => {
+    const oldTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const freshTimestamp = new Date(Date.now() - 60 * 1000).toISOString();
+    mockApi({
+      vehicles: [
+        { id: 49, registration_number: 'FLEET-049', name: 'WebSocket van', status: 'active' },
+        { id: 50, registration_number: 'FLEET-050', name: 'Second van', status: 'active' },
+      ],
+      locations: [{
+        vehicle_id: 49,
+        latitude: 12.1,
+        longitude: 77.1,
+        timestamp: oldTimestamp,
+      }],
+    });
+    await renderDashboard();
+
+    expect(screen.getAllByText('GPS STALE').length).toBeGreaterThan(0);
+
+    act(() => sockets[0].receive({
+      type: 'location',
+      data: {
+        vehicle_id: 49,
+        latitude: 12.2,
+        longitude: 77.2,
+        timestamp: freshTimestamp,
+      },
+    }));
+
+    expect(await screen.findByText(/Status: LIVE/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Status: LIVE/)).toHaveLength(1);
   });
 
   it('reports the actual backend error when a simulated GPS update fails', async () => {

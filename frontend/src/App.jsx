@@ -16,39 +16,15 @@ const markerIcon = L.divIcon({
   iconSize: [28, 28],
   iconAnchor: [14, 14],
 });
-const demoMarkerIcon = L.divIcon({
-  className: 'demo-vehicle-marker-icon',
-  html: '<span class="demo-vehicle-marker-dot">D</span>',
+const staleMarkerIcon = L.divIcon({
+  className: 'stale-vehicle-marker-icon',
+  html: '<span class="vehicle-marker-dot stale-vehicle-marker-dot"></span>',
   iconSize: [28, 28],
   iconAnchor: [14, 14],
 });
 
 const defaultMapCenter = [12.9716, 77.5946];
-const demoVehicles = [
-  { id: 'demo-whitefield', registration_number: 'DEMO-BLR-01', name: 'Whitefield delivery van', neighborhood: 'Whitefield', latitude: 12.9698, longitude: 77.7500 },
-  { id: 'demo-electronic-city', registration_number: 'DEMO-BLR-02', name: 'Electronic City service vehicle', neighborhood: 'Electronic City', latitude: 12.8452, longitude: 77.6602 },
-  { id: 'demo-marathahalli', registration_number: 'DEMO-BLR-03', name: 'Marathahalli cargo vehicle', neighborhood: 'Marathahalli', latitude: 12.9591, longitude: 77.6974 },
-  { id: 'demo-hebbal', registration_number: 'DEMO-BLR-04', name: 'Hebbal operations vehicle', neighborhood: 'Hebbal', latitude: 13.0358, longitude: 77.5970 },
-  { id: 'demo-koramangala', registration_number: 'DEMO-BLR-05', name: 'Koramangala fleet vehicle', neighborhood: 'Koramangala', latitude: 12.9352, longitude: 77.6245 },
-  { id: 'demo-yelahanka', registration_number: 'DEMO-BLR-06', name: 'Yelahanka dispatch vehicle', neighborhood: 'Yelahanka', latitude: 13.1007, longitude: 77.5963 },
-];
-const demoGeofences = [
-  {
-    id: 'demo-zone-whitefield',
-    name: 'Whitefield Operations Zone',
-    coordinates: [[12.9652, 77.7430], [12.9652, 77.7520], [12.9721, 77.7520], [12.9721, 77.7430], [12.9652, 77.7430]],
-  },
-  {
-    id: 'demo-zone-electronic-city',
-    name: 'Electronic City Hub',
-    coordinates: [[12.8410, 77.6550], [12.8410, 77.6650], [12.8490, 77.6650], [12.8490, 77.6550], [12.8410, 77.6550]],
-  },
-  {
-    id: 'demo-zone-koramangala',
-    name: 'Koramangala Service Area',
-    coordinates: [[12.9300, 77.6200], [12.9300, 77.6290], [12.9380, 77.6290], [12.9380, 77.6200], [12.9300, 77.6200]],
-  },
-];
+const GPS_STALE_AFTER_MS = 5 * 60 * 1000;
 
 const defaultVehicle = { registration_number: '', name: '', status: 'active' };
 const defaultGeofence = { name: '', description: '', coordinates: '0,0;0,0.1;0.1,0.1;0.1,0;0,0' };
@@ -120,9 +96,14 @@ export default function App() {
     };
 
     connect();
+    const staleRefreshTimer = window.setInterval(() => {
+      setVehicleLocations((current) => ({ ...current }));
+    }, 30000);
+
     return () => {
       disconnected = true;
       window.clearTimeout(reconnectTimer);
+      window.clearInterval(staleRefreshTimer);
       socket?.close();
     };
   }, []);
@@ -133,35 +114,27 @@ export default function App() {
         id: geofence.id,
         latlngs: geofence.coordinates.map(([lat, lon]) => [lat, lon]),
         name: geofence.name,
-        isDemo: false,
       })),
     [geofences],
   );
   const allMapPoints = useMemo(
-    () => [
-      ...mapPoints,
-      ...demoGeofences.map((geofence) => ({
-        id: geofence.id,
-        latlngs: geofence.coordinates,
-        name: geofence.name,
-        isDemo: true,
-      })),
-    ],
+    () => mapPoints,
     [mapPoints],
   );
-  const demoLocatedVehicles = useMemo(
-    () => demoVehicles.map((vehicle) => ({
-      ...vehicle,
-      isDemo: true,
-      location: { latitude: vehicle.latitude, longitude: vehicle.longitude },
-    })),
-    [],
+  const trackedVehicles = useMemo(
+    () => vehicles.map((vehicle) => {
+      const location = vehicleLocations[vehicle.id];
+      return {
+        ...vehicle,
+        location,
+        locationStatus: getVehicleLocationStatus(location),
+      };
+    }),
+    [vehicles, vehicleLocations],
   );
   const locatedVehicles = useMemo(
-    () => vehicles
-      .map((vehicle) => ({ ...vehicle, location: vehicleLocations[vehicle.id] }))
-      .filter((vehicle) => vehicle.location),
-    [vehicles, vehicleLocations],
+    () => trackedVehicles.filter((vehicle) => vehicle.location),
+    [trackedVehicles],
   );
   const filteredAlerts = useMemo(() => {
     if (alertFilter === 'ALL') return alerts;
@@ -177,10 +150,9 @@ export default function App() {
   const mapBoundsPoints = useMemo(
     () => [
       ...locatedVehicles.map(({ location }) => [location.latitude, location.longitude]),
-      ...demoLocatedVehicles.map(({ location }) => [location.latitude, location.longitude]),
       ...allMapPoints.flatMap(({ latlngs }) => latlngs),
     ],
-    [locatedVehicles, demoLocatedVehicles, allMapPoints],
+    [locatedVehicles, allMapPoints],
   );
 
   const loadData = async () => {
@@ -449,7 +421,7 @@ export default function App() {
                   <p className="eyebrow">REAL-TIME OPERATIONS</p>
                   <h2>Live vehicle map</h2>
                 </div>
-                <div className="map-legend"><span className="legend-vehicle" />Vehicle <span className="legend-geofence" />Geofence <span className="legend-demo">D</span>Simulated demo</div>
+                <div className="map-legend"><span className="legend-vehicle" />LIVE <span className="legend-stale" />GPS STALE</div>
               </div>
               <MapContainer center={defaultMapCenter} zoom={12} scrollWheelZoom={true} className="map-container">
                 <MapViewport points={mapBoundsPoints} />
@@ -461,13 +433,10 @@ export default function App() {
                   <Polygon
                     key={geofence.id}
                     positions={geofence.latlngs}
-                    pathOptions={geofence.isDemo
-                      ? { color: '#2879b9', fillColor: '#438dc5', fillOpacity: 0.1, weight: 2, dashArray: '6 5' }
-                      : { color: '#f7933a', fillColor: '#f7933a', fillOpacity: 0.13, weight: 2 }}
+                    pathOptions={{ color: '#f7933a', fillColor: '#f7933a', fillOpacity: 0.13, weight: 2 }}
                   >
                     <Popup>
                       <strong>{geofence.name}</strong>
-                      {geofence.isDemo && <><br /><span>SIMULATED DEMO ZONE</span></>}
                     </Popup>
                   </Polygon>
                 ))}
@@ -475,33 +444,19 @@ export default function App() {
                   <Marker
                     key={vehicle.id}
                     position={[vehicle.location.latitude, vehicle.location.longitude]}
-                    icon={markerIcon}
-                    title={vehicle.registration_number}
+                    icon={vehicle.locationStatus === 'GPS STALE' ? staleMarkerIcon : markerIcon}
+                    title={`${vehicle.registration_number} — ${vehicle.locationStatus}`}
                   >
                     <Popup>
                       <strong>{vehicle.registration_number}</strong>
                       <br />
                       {vehicle.name}
                       <br />
-                      Latest GPS location: {vehicle.location.latitude.toFixed(6)}, {vehicle.location.longitude.toFixed(6)}
-                    </Popup>
-                  </Marker>
-                ))}
-                {demoLocatedVehicles.map((vehicle) => (
-                  <Marker
-                    key={vehicle.id}
-                    position={[vehicle.location.latitude, vehicle.location.longitude]}
-                    icon={demoMarkerIcon}
-                    title={`${vehicle.registration_number} — simulated demonstration GPS`}
-                  >
-                    <Popup>
-                      <strong>{vehicle.registration_number}</strong>
+                      Status: {vehicle.locationStatus}
                       <br />
-                      {vehicle.name} · {vehicle.neighborhood}
+                      Coordinates: {vehicle.location.latitude.toFixed(6)}, {vehicle.location.longitude.toFixed(6)}
                       <br />
-                      SIMULATED DEMO GPS (fixed coordinates)
-                      <br />
-                      {vehicle.location.latitude.toFixed(6)}, {vehicle.location.longitude.toFixed(6)}
+                      Timestamp: {formatTimestamp(vehicle.location.timestamp)}
                     </Popup>
                   </Marker>
                 ))}
@@ -510,10 +465,9 @@ export default function App() {
                 <span><span className="connection-dot" />{locatedVehicles.length} {locatedVehicles.length === 1 ? 'vehicle' : 'vehicles'} with backend GPS locations</span>
                 <div className="coordinate-strip" aria-label="Latest GPS coordinates">
                   {locatedVehicles.length === 0 ? <span>No GPS coordinates received yet</span> : locatedVehicles.slice(0, 3).map((vehicle) => (
-                    <span key={vehicle.id}><strong>{vehicle.registration_number}</strong> {vehicle.location.latitude.toFixed(4)}, {vehicle.location.longitude.toFixed(4)}</span>
+                    <span key={vehicle.id}><strong>{vehicle.registration_number}</strong> {vehicle.location.latitude.toFixed(4)}, {vehicle.location.longitude.toFixed(4)} · {vehicle.locationStatus}</span>
                   ))}
                 </div>
-                <span className="demo-map-note"><span className="demo-marker-key">D</span>{demoLocatedVehicles.length} fixed simulated demo vehicles · map only</span>
               </div>
             </section>
 
@@ -576,7 +530,8 @@ export default function App() {
                   {filteredVehicles.length === 0 ? (
                     <p className="vehicle-empty">{vehicles.length === 0 ? 'No vehicles registered yet.' : 'No vehicles match that registration.'}</p>
                   ) : filteredVehicles.map((vehicle) => {
-                    const hasLocation = Boolean(vehicleLocations[vehicle.id]);
+                    const location = vehicleLocations[vehicle.id];
+                    const gpsStatus = getVehicleLocationStatus(location);
                     return (
                       <article key={vehicle.id} className="vehicle-row">
                         <div className="vehicle-identity">
@@ -584,7 +539,7 @@ export default function App() {
                           <span><strong>{vehicle.name || 'Unnamed vehicle'}</strong><small>{vehicle.registration_number}</small></span>
                         </div>
                         <span className={`status-pill ${(vehicle.status || 'unknown').toLowerCase()}`}><span />{vehicle.status || 'Unknown'}</span>
-                        <span className={`gps-state ${hasLocation ? 'available' : ''}`}><span />{hasLocation ? 'Tracking' : 'No signal'}</span>
+                        <span className={`gps-state ${gpsStatus === 'LIVE' ? 'available' : gpsStatus === 'GPS STALE' ? 'stale' : 'pending'}`}><span />{gpsStatus}</span>
                         <div className="row-actions">
                           <button
                             type="button"
@@ -628,9 +583,9 @@ export default function App() {
           </section>
 
           {simulationVehicleId !== null && (
-            <section className="panel simulation-panel" aria-label="GPS simulation mode">
+            <section className="panel simulation-panel" aria-label="GPS Simulation (Testing)">
               <div className="panel-heading section-heading">
-                <div><p className="eyebrow">LOCATION TESTING</p><h2>GPS simulation mode</h2><p className="section-description">Send a location update to the backend for geofence evaluation.</p></div>
+                <div><p className="eyebrow">LOCATION TESTING</p><h2>GPS Simulation (Testing)</h2><p className="section-description">Test GPS data is simulated for integration testing only and is not live hardware telemetry.</p></div>
                 <button type="button" className="secondary-button" onClick={() => setSimulationVehicleId(null)}>Close simulation</button>
               </div>
               <p className="selected-vehicle">Selected vehicle: <strong>{vehicles.find((vehicle) => vehicle.id === simulationVehicleId)?.registration_number || `Vehicle ${simulationVehicleId}`}</strong> <span>(ID {simulationVehicleId})</span></p>
@@ -744,6 +699,14 @@ function formatTimestamp(value) {
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : 'Time unavailable';
 }
 
+function getVehicleLocationStatus(location) {
+  if (!location) return 'LOCATION PENDING';
+  const timestamp = Number.isFinite(Date.parse(location.timestamp)) ? Date.parse(location.timestamp) : Number.NaN;
+  if (!Number.isFinite(timestamp)) return 'GPS STALE';
+  const age = Date.now() - timestamp;
+  return age >= 0 && age <= GPS_STALE_AFTER_MS ? 'LIVE' : 'GPS STALE';
+}
+
 function normalizeLocation(location) {
   if (!location) return null;
   const vehicleId = Number(location.vehicle_id);
@@ -760,15 +723,13 @@ function normalizeLocation(location) {
   }
   const latitude = Number(location.latitude);
   const longitude = Number(location.longitude);
-  const timestamp = Date.parse(location.timestamp);
   if (
     !Number.isFinite(latitude) ||
     !Number.isFinite(longitude) ||
     latitude < -90 ||
     latitude > 90 ||
     longitude < -180 ||
-    longitude > 180 ||
-    !Number.isFinite(timestamp)
+    longitude > 180
   ) {
     return null;
   }
@@ -778,7 +739,24 @@ function normalizeLocation(location) {
 function mergeVehicleLocations(current, incoming) {
   return incoming.reduce((locations, location) => {
     const previous = locations[location.vehicle_id];
-    if (!previous || Date.parse(location.timestamp) >= Date.parse(previous.timestamp)) {
+    const previousTimestamp = previous && previous.timestamp ? Date.parse(previous.timestamp) : Number.NaN;
+    const incomingTimestamp = location.timestamp ? Date.parse(location.timestamp) : Number.NaN;
+    const previousHasValidTimestamp = Number.isFinite(previousTimestamp);
+    const incomingHasValidTimestamp = Number.isFinite(incomingTimestamp);
+
+    if (!previous) {
+      locations[location.vehicle_id] = location;
+      return locations;
+    }
+
+    if (!incomingHasValidTimestamp) {
+      if (!previousHasValidTimestamp) {
+        locations[location.vehicle_id] = location;
+      }
+      return locations;
+    }
+
+    if (!previousHasValidTimestamp || incomingTimestamp >= previousTimestamp) {
       locations[location.vehicle_id] = location;
     }
     return locations;
