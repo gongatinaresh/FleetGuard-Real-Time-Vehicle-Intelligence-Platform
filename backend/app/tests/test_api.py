@@ -18,6 +18,26 @@ def test_create_vehicle_and_duplicate(client):
     assert duplicate.status_code == 400
 
 
+def test_recreating_soft_deleted_vehicle_restores_existing_record(client):
+    payload = {"registration_number": "RESTORE123", "name": "Original vehicle", "status": "active"}
+    created = client.post("/vehicles", json=payload)
+    assert created.status_code == 201
+    vehicle_id = created.json()["id"]
+
+    deleted = client.delete(f"/vehicles/{vehicle_id}")
+    assert deleted.status_code == 204
+    assert all(item["id"] != vehicle_id for item in client.get("/vehicles").json())
+
+    restored = client.post(
+        "/vehicles",
+        json={"registration_number": "RESTORE123", "name": "Restored vehicle", "status": "inactive"},
+    )
+    assert restored.status_code == 201
+    assert restored.json()["id"] == vehicle_id
+    assert restored.json()["name"] == "Restored vehicle"
+    assert restored.json()["status"] == "inactive"
+
+
 def test_geofence_validation_and_creation(client):
     valid = {
         "name": "Zone A",

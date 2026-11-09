@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -24,12 +25,30 @@ def list_vehicles(db: Session = Depends(get_db)):
 @router.post("", response_model=VehicleRead, status_code=status.HTTP_201_CREATED)
 def create_vehicle(payload: VehicleCreate, db: Session = Depends(get_db)):
     existing = db.query(Vehicle).filter_by(registration_number=payload.registration_number).first()
+
     if existing and not existing.is_deleted:
-        raise HTTPException(status_code=400, detail="Vehicle registration must be unique")
-    vehicle = Vehicle(**payload.model_dump())
-    db.add(vehicle)
-    db.commit()
-    db.refresh(vehicle)
+        raise HTTPException(status_code=400, detail="A vehicle with this registration number already exists.")
+
+    # A soft-deleted row still owns its unique registration number. Restore it
+    # instead of inserting a second row that would violate the database index.
+    if existing and existing.is_deleted:
+        existing.is_deleted = False
+        existing.name = payload.name
+        existing.status = payload.status
+        vehicle = existing
+    else:
+        vehicle = Vehicle(**payload.model_dump())
+        db.add(vehicle)
+
+    try:
+        db.commit()
+        db.refresh(vehicle)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A vehicle with this registration number already exists.",
+        )
     return vehicle
 
 

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 
@@ -58,12 +58,12 @@ function summary(totalAlerts = 0) {
   };
 }
 
-function mockApi({ totalAlerts = 0, summaryRequest, vehicles = [], locations = [] } = {}) {
+function mockApi({ totalAlerts = 0, summaryRequest, vehicles = [], locations = [], alerts = [], geofences = [] } = {}) {
   const responses = {
     '/api/vehicles': vehicles,
     '/api/vehicles/locations/latest': locations,
-    '/api/geofences': [],
-    '/api/alerts': [],
+    '/api/geofences': geofences,
+    '/api/alerts': alerts,
   };
   axios.get.mockImplementation((url) => {
     if (url === '/api/alerts/summary') {
@@ -160,6 +160,34 @@ describe('dashboard', () => {
     expect(screen.getByText('1 vehicle with backend GPS locations')).toBeInTheDocument();
     expect(screen.getByText('6 fixed simulated demo vehicles · map only')).toBeInTheDocument();
     expect(screen.getByText('1 vehicle')).toBeInTheDocument();
+  });
+
+
+  it('renders persisted alert history and filters entries and exits', async () => {
+    const vehicles = [{ id: 17, registration_number: 'FLEET-017', name: 'Delivery van', status: 'active' }];
+    const geofences = [{ id: 4, name: 'Central Warehouse', coordinates: [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]] }];
+    const alerts = [
+      { id: 201, vehicle_id: 17, geofence_id: 4, event_type: 'ENTER', event_time: '2026-11-08T10:00:00Z', is_read: 'unread', created_at: '2026-11-08T10:00:00Z' },
+      { id: 202, vehicle_id: 17, geofence_id: 4, event_type: 'EXIT', event_time: '2026-11-08T11:00:00Z', is_read: 'unread', created_at: '2026-11-08T11:00:00Z' },
+    ];
+    mockApi({ totalAlerts: 2, vehicles, geofences, alerts });
+    await renderDashboard();
+
+    const alertSection = screen.getByLabelText('Geofence alerts');
+
+    expect(screen.getByText('2 recorded')).toBeInTheDocument();
+    expect(within(alertSection).getAllByText('FLEET-017')).toHaveLength(2);
+    expect(within(alertSection).getByText('entered')).toBeInTheDocument();
+    expect(within(alertSection).getByText('exited')).toBeInTheDocument();
+    expect(within(alertSection).getAllByText('Central Warehouse')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Entries' }));
+    expect(screen.getByText('ENTER')).toBeInTheDocument();
+    expect(screen.queryByText('EXIT')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Exits' }));
+    expect(screen.getByText('EXIT')).toBeInTheDocument();
+    expect(screen.queryByText('ENTER')).not.toBeInTheDocument();
   });
 
   it('shows a WebSocket alert and increments the total immediately', async () => {
@@ -277,6 +305,33 @@ describe('dashboard', () => {
 
     expect(await screen.findByRole('status')).toHaveTextContent('Enter valid latitude (-90 to 90)');
     expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it('formats geofence validation errors instead of showing [object Object]', async () => {
+    axios.post.mockRejectedValue({
+      response: {
+        data: {
+          detail: [
+            {
+              loc: ['body', 'coordinates', 0],
+              msg: 'Each coordinate must contain latitude and longitude.',
+            },
+          ],
+        },
+      },
+      message: 'Request failed',
+    });
+    await renderDashboard();
+
+    fireEvent.change(screen.getByLabelText('Geofence name'), {
+      target: { value: 'Test Zone' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create geofence' }));
+
+    expect(await screen.findByText(
+      'Could not create geofence: coordinates.0: Each coordinate must contain latitude and longitude.',
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
   });
 
   it('filters vehicles by registration and deletes a vehicle after confirmation', async () => {

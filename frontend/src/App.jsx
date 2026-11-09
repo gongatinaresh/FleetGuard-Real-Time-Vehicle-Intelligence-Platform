@@ -58,6 +58,7 @@ export default function App() {
   const [vehicleLocations, setVehicleLocations] = useState({});
   const [geofences, setGeofences] = useState([]);
   const [alerts, setAlerts] = useState([]);
+  const [alertFilter, setAlertFilter] = useState('ALL');
   const [summary, setSummary] = useState({ total_vehicles: 0, active_vehicles: 0, total_geofences: 0, total_alerts: 0 });
   const seenAlertIds = useRef(new Set());
   const [vehicleForm, setVehicleForm] = useState(defaultVehicle);
@@ -161,6 +162,10 @@ export default function App() {
       .filter((vehicle) => vehicle.location),
     [vehicles, vehicleLocations],
   );
+  const filteredAlerts = useMemo(() => {
+    if (alertFilter === 'ALL') return alerts;
+    return alerts.filter((alert) => (alert.event_type || '').toUpperCase() === alertFilter);
+  }, [alerts, alertFilter]);
   const filteredVehicles = useMemo(() => {
     const query = vehicleSearch.trim().toLowerCase();
     if (!query) return vehicles;
@@ -186,27 +191,44 @@ export default function App() {
         axios.get(`${API_BASE}/alerts`),
         axios.get(`${API_BASE}/alerts/summary`),
       ]);
-      setVehicles(vehicleRes.data);
-      const latestLocations = locationRes.data
+      const vehiclesData = Array.isArray(vehicleRes.data) ? vehicleRes.data : [];
+      const locationData = Array.isArray(locationRes.data) ? locationRes.data : [];
+      const geofenceData = Array.isArray(geofenceRes.data) ? geofenceRes.data : [];
+      const alertData = Array.isArray(alertRes.data) ? alertRes.data : [];
+      const summaryData = summaryRes?.data && typeof summaryRes.data === 'object' ? summaryRes.data : {};
+
+      setVehicles(vehiclesData);
+      const latestLocations = locationData
         .map(normalizeLocation)
         .filter(Boolean);
       setVehicleLocations((current) => mergeVehicleLocations(current, latestLocations));
-      setGeofences(geofenceRes.data);
-      alertRes.data.forEach((alert) => seenAlertIds.current.add(alert.id));
+      setGeofences(geofenceData);
+      alertData.forEach((alert) => {
+        if (Number.isFinite(Number(alert.id))) {
+          seenAlertIds.current.add(Number(alert.id));
+        }
+      });
       setAlerts((current) => {
         const byId = new Map(current.map((alert) => [alert.id, alert]));
-        alertRes.data.forEach((alert) => byId.set(alert.id, alert));
+        alertData.forEach((alert) => {
+          if (Number.isFinite(Number(alert.id))) {
+            byId.set(Number(alert.id), alert);
+          }
+        });
         return [...byId.values()]
           .sort((left, right) => Date.parse(right.event_time) - Date.parse(left.event_time))
           .slice(0, 10);
       });
       setSummary((current) => ({
-        ...summaryRes.data,
-        total_alerts: Math.max(summaryRes.data.total_alerts, current.total_alerts),
+        ...current,
+        ...summaryData,
+        total_alerts: Number.isFinite(Number(summaryData.total_alerts))
+          ? Math.max(Number(summaryData.total_alerts), current.total_alerts)
+          : current.total_alerts,
       }));
     } catch (error) {
       console.error('Failed to load dashboard data', error);
-      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      const detail = formatApiError(error);
       setNotice({ type: 'error', message: `Dashboard data could not be refreshed: ${detail}` });
     }
   };
@@ -224,7 +246,7 @@ export default function App() {
       setNotice({ type: 'success', message: 'Vehicle added successfully.' });
       await loadData();
     } catch (error) {
-      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      const detail = formatApiError(error);
       setFormError(`Could not add vehicle: ${detail}`);
     }
   };
@@ -251,7 +273,7 @@ export default function App() {
       setNotice({ type: 'success', message: `${registration} deleted successfully.` });
       await loadData();
     } catch (error) {
-      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      const detail = formatApiError(error);
       setNotice({ type: 'error', message: `Could not delete ${registration}: ${detail}` });
     } finally {
       setDeletingVehicleId(null);
@@ -274,7 +296,7 @@ export default function App() {
       setNotice({ type: 'success', message: 'Geofence created successfully.' });
       await loadData();
     } catch (error) {
-      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      const detail = formatApiError(error);
       setFormError(`Could not create geofence: ${detail}`);
     }
   };
@@ -315,7 +337,7 @@ export default function App() {
       });
       loadData();
     } catch (error) {
-      const detail = error.response?.data?.detail || error.message || 'Request failed.';
+      const detail = formatApiError(error);
       setSimulationResult({ type: 'error', message: `Backend rejected update: ${detail}` });
     } finally {
       setSimulationPending(false);
@@ -472,31 +494,50 @@ export default function App() {
               </div>
             </section>
 
-            <section className="panel alerts-panel" id="alerts">
+            <section className="panel alerts-panel" id="alerts" aria-label="Geofence alerts">
               <div className="panel-heading">
-                <div><p className="eyebrow">ACTIVITY FEED</p><h2>Recent alerts</h2></div>
+                <div><p className="eyebrow">ACTIVITY FEED</p><h2>Recent alerts</h2><p className="section-description">Vehicle entry and exit events from saved GPS updates.</p></div>
                 <span className="live-tag"><span className="connection-dot" />LIVE</span>
               </div>
-              <div className="alert-list">
+              <div className="alert-toolbar" aria-label="Filter alerts">
+                <span className="alert-count">{summary.total_alerts} recorded</span>
+                <div className="alert-filters">
+                  {['ALL', 'ENTER', 'EXIT'].map((filter) => (
+                    <button
+                      key={filter}
+                      type="button"
+                      className={`alert-filter ${alertFilter === filter ? 'active' : ''}`}
+                      aria-pressed={alertFilter === filter}
+                      onClick={() => setAlertFilter(filter)}
+                    >
+                      {filter === 'ALL' ? 'All' : filter === 'ENTER' ? 'Entries' : 'Exits'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="alert-list" aria-live="polite">
                 {alerts.length === 0 ? (
-                  <div className="empty-state"><span className="empty-icon"><Icon name="bell" /></span><strong>All quiet</strong><p>No geofence events to show.</p></div>
-                ) : alerts.slice(0, 10).map((alert) => {
+                  <div className="empty-state"><span className="empty-icon"><Icon name="bell" /></span><strong>No alerts yet</strong><p>Create a vehicle and geofence, then send a GPS update inside or outside the zone.</p></div>
+                ) : filteredAlerts.length === 0 ? (
+                  <div className="empty-state"><span className="empty-icon"><Icon name="bell" /></span><strong>No matching alerts</strong><p>Try another alert filter.</p></div>
+                ) : filteredAlerts.slice(0, 10).map((alert) => {
                   const vehicle = vehicles.find((item) => Number(item.id) === Number(alert.vehicle_id));
                   const geofence = geofences.find((item) => Number(item.id) === Number(alert.geofence_id));
                   const eventType = (alert.event_type || 'EVENT').toUpperCase();
+                  const eventVerb = eventType === 'ENTER' ? 'entered' : eventType === 'EXIT' ? 'exited' : 'triggered an event in';
                   return (
                     <article key={alert.id} className="alert-item">
                       <span className={`alert-icon ${eventType.toLowerCase()}`}><Icon name={eventType === 'ENTER' ? 'enter' : 'exit'} /></span>
                       <div className="alert-copy">
                         <div className="alert-title"><strong>{vehicle?.registration_number || `Vehicle ${alert.vehicle_id}`}</strong><span className={`pill ${eventType.toLowerCase()}`}>{eventType}</span></div>
-                        <small>{geofence?.name || `Geofence ${alert.geofence_id}`}</small>
+                        <small>{eventVerb} <strong>{geofence?.name || `Geofence ${alert.geofence_id}`}</strong></small>
                         <time dateTime={alert.event_time}>{formatTimestamp(alert.event_time)}</time>
                       </div>
                     </article>
                   );
                 })}
               </div>
-              <a className="text-link" href="#alerts">Viewing latest events <Icon name="chevron" /></a>
+              <a className="text-link" href="#alerts">Showing latest matching events <Icon name="chevron" /></a>
             </section>
           </div>
 
@@ -703,6 +744,30 @@ function mergeVehicleLocations(current, incoming) {
     }
     return locations;
   }, { ...current });
+}
+
+
+function formatApiError(error) {
+  const detail = error?.response?.data?.detail;
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        const location = Array.isArray(item?.loc)
+          ? item.loc.filter((part) => part !== 'body').join('.')
+          : '';
+        const message = item?.msg || item?.message || 'Invalid value';
+        return location ? `${location}: ${message}` : message;
+      })
+      .join('; ');
+  }
+
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object') {
+    return detail.message || JSON.stringify(detail);
+  }
+  return error?.message || 'Request failed.';
 }
 
 function PointStringToPair(point) {
